@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Care Plan #{{ order_id }}</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #222; }
+        h1 { color: #0066cc; }
+        .meta { background: #f0f4f8; padding: 12px 16px; border-radius: 6px; font-size: 14px; }
+        .meta p { margin: 4px 0; }
+        .care-plan { background: #f8f9fa; padding: 24px; border-radius: 8px; white-space: pre-wrap; line-height: 1.6; font-size: 15px; margin-top: 16px; border: 1px solid #e0e0e0; }
+        .actions { margin: 20px 0; }
+        .actions a { padding: 10px 20px; background: #0066cc; color: white; text-decoration: none; border-radius: 4px; margin-right: 8px; font-size: 14px; }
+        .actions a.secondary { background: #6c757d; }
+    </style>
+</head>
+<body>
+    <h1>Care Plan #{{ order_id }}</h1>
+
+    <div class="meta">
+        <p><strong>Patient:</strong> {{ order.data.patient_first_name }} {{ order.data.patient_last_name }} (MRN: {{ order.data.patient_mrn }}, DOB: {{ order.data.patient_dob }})</p>
+        <p><strong>Medication:</strong> {{ order.data.medication_name }}</p>
+        <p><strong>Diagnosis:</strong> {{ order.data.primary_diagnosis }}</p>
+        <p><strong>Provider:</strong> {{ order.data.provider_name }} (NPI: {{ order.data.provider_npi }})</p>
+    </div>
+
+    <div class="actions">
+        <a href="/orders/{{ order_id }}/download/">Download as TXT</a>
+        <a href="/" class="secondary">Generate Another</a>
+    </div>
+
+    <div class="care-plan">{{ order.care_plan }}</div>
+</body>
+</html>
