@@ -1,9 +1,18 @@
-from django.shortcuts import render, redirect
-from django.http import HttpResponse
-from anthropic import Anthropic
+import json
+import logging
 
-ORDERS = {}
-NEXT_ID = 1
+import redis
+from django.conf import settings
+from django.shortcuts import render, redirect, get_object_or_404
+from django.http import HttpResponse, JsonResponse
+
+from .models import Patient, Provider, Order, CarePlan
+
+logger = logging.getLogger(__name__)
+
+
+def _redis_client():
+    return redis.Redis.from_url(settings.REDIS_URL)
 
 
 def form_view(request):
@@ -11,70 +20,98 @@ def form_view(request):
 
 
 def submit_view(request):
-    global NEXT_ID
+    full_name = (
+        f"{request.POST.get('patient_first_name', '').strip()} "
+        f"{request.POST.get('patient_last_name', '').strip()}"
+    ).strip()
 
-    data = {
-        'patient_first_name': request.POST.get('patient_first_name', ''),
-        'patient_last_name': request.POST.get('patient_last_name', ''),
-        'patient_mrn': request.POST.get('patient_mrn', ''),
-        'patient_dob': request.POST.get('patient_dob', ''),
-        'primary_diagnosis': request.POST.get('primary_diagnosis', ''),
-        'additional_diagnoses': request.POST.get('additional_diagnoses', ''),
-        'medication_name': request.POST.get('medication_name', ''),
-        'medication_history': request.POST.get('medication_history', ''),
-        'patient_records': request.POST.get('patient_records', ''),
-        'provider_name': request.POST.get('provider_name', ''),
-        'provider_npi': request.POST.get('provider_npi', ''),
-    }
+    patient, _ = Patient.objects.get_or_create(
+        mrn=request.POST.get('patient_mrn', ''),
+        defaults={
+            'name': full_name,
+            'dob': request.POST.get('patient_dob') or None,
+        },
+    )
 
-    care_plan = generate_care_plan(data)
+    provider, _ = Provider.objects.get_or_create(
+        npi=request.POST.get('provider_npi', ''),
+        defaults={'name': request.POST.get('provider_name', '')},
+    )
 
-    order_id = NEXT_ID
-    NEXT_ID += 1
-    ORDERS[order_id] = {'data': data, 'care_plan': care_plan}
+    diagnosis = request.POST.get('primary_diagnosis', '')
+    if request.POST.get('additional_diagnoses'):
+        diagnosis = f"{diagnosis}; {request.POST.get('additional_diagnoses')}"
 
-    return redirect('order_detail', order_id=order_id)
+    medical_record_parts = []
+    if request.POST.get('medication_history'):
+        medical_record_parts.append(f"Medication history: {request.POST.get('medication_history')}")
+    if request.POST.get('patient_records'):
+        medical_record_parts.append(f"Records: {request.POST.get('patient_records')}")
+
+    order = Order.objects.create(
+        patient=patient,
+        provider=provider,
+        medication=request.POST.get('medication_name', ''),
+        diagnosis=diagnosis,
+        medical_record="\n\n".join(medical_record_parts),
+    )
+
+    care_plan = CarePlan.objects.create(
+        order=order,
+        status=CarePlan.Status.PENDING,
+    )
+
+    logger.info("已写入 DB：CarePlan #%d (status=pending)", care_plan.id)
+
+    client = _redis_client()
+    message = json.dumps({"care_plan_id": care_plan.id})
+    queue_length = client.lpush(settings.CAREPLAN_QUEUE_NAME, message)
+
+    logger.info(
+        "已推入 Redis 队列 [%s]：care_plan_id=%d，队列当前长度 %d",
+        settings.CAREPLAN_QUEUE_NAME, care_plan.id, queue_length,
+    )
+
+    return redirect('care_plan_detail', care_plan_id=care_plan.id)
 
 
-def order_detail(request, order_id):
-    order = ORDERS[order_id]
-    return render(request, 'result.html', {'order': order, 'order_id': order_id})
+def care_plan_detail(request, care_plan_id):
+    care_plan = get_object_or_404(
+        CarePlan.objects.select_related('order__patient', 'order__provider'),
+        pk=care_plan_id,
+    )
+    return render(request, 'result.html', {'care_plan': care_plan})
 
 
-def download_care_plan(request, order_id):
-    order = ORDERS[order_id]
-    response = HttpResponse(order['care_plan'], content_type='text/plain')
-    response['Content-Disposition'] = f'attachment; filename="care_plan_{order_id}.txt"'
+def download_care_plan(request, care_plan_id):
+    care_plan = get_object_or_404(CarePlan, pk=care_plan_id)
+    content = care_plan.content or '(care plan still being generated)'
+    response = HttpResponse(content, content_type='text/plain')
+    response['Content-Disposition'] = f'attachment; filename="care_plan_{care_plan_id}.txt"'
     return response
 
 
-def generate_care_plan(data):
-    client = Anthropic()
+def get_care_plans_by_mrn(request):
+    mrn = request.GET.get('mrn', '')
+    if mrn == '':
+        return JsonResponse({'error': 'MRN is required'}, status=400)
 
-    prompt = f"""You are a clinical pharmacist writing a care plan for a specialty pharmacy patient.
-
-Patient: {data['patient_first_name']} {data['patient_last_name']}
-MRN: {data['patient_mrn']}
-DOB: {data['patient_dob']}
-Primary Diagnosis (ICD-10): {data['primary_diagnosis']}
-Additional Diagnoses: {data['additional_diagnoses']}
-Medication: {data['medication_name']}
-Medication History: {data['medication_history']}
-Patient Records: {data['patient_records']}
-Referring Provider: {data['provider_name']} (NPI: {data['provider_npi']})
-
-Write a structured care plan with these four sections:
-1. Problem list / Drug therapy problems
-2. Goals (SMART)
-3. Pharmacist interventions / plan
-4. Monitoring plan & lab schedule
-
-Use plain text. Be specific and clinically appropriate."""
-
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=2000,
-        messages=[{"role": "user", "content": prompt}],
+    care_plans = (
+        CarePlan.objects
+        .filter(order__patient__mrn=mrn)
+        .select_related('order__patient', 'order__provider')
+        .order_by('-created_at')
     )
 
-    return message.content[0].text
+    result = [
+        {
+            'care_plan_id': cp.id,
+            'order_id': cp.order.id,
+            'medication': cp.order.medication,
+            'status': cp.status,
+            'content': cp.content,
+            'created_at': cp.created_at.isoformat(),
+        }
+        for cp in care_plans
+    ]
+    return JsonResponse({'care_plans': result})

@@ -1,33 +1,52 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Care Plan #{{ order_id }}</title>
+    <title>Care Plan #{{ care_plan.id }}</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #222; }
         h1 { color: #0066cc; }
+        .status { display: inline-block; padding: 4px 10px; border-radius: 4px; font-size: 13px; font-weight: 600; margin-left: 8px; vertical-align: middle; }
+        .status-pending { background: #fff4cd; color: #856404; }
+        .status-processing { background: #cce5ff; color: #004085; }
+        .status-completed { background: #d4edda; color: #155724; }
+        .status-failed { background: #f8d7da; color: #721c24; }
         .meta { background: #f0f4f8; padding: 12px 16px; border-radius: 6px; font-size: 14px; }
         .meta p { margin: 4px 0; }
         .care-plan { background: #f8f9fa; padding: 24px; border-radius: 8px; white-space: pre-wrap; line-height: 1.6; font-size: 15px; margin-top: 16px; border: 1px solid #e0e0e0; }
+        .pending-notice { background: #fff4cd; padding: 24px; border-radius: 8px; margin-top: 16px; border: 1px solid #ffeaa7; color: #856404; }
         .actions { margin: 20px 0; }
         .actions a { padding: 10px 20px; background: #0066cc; color: white; text-decoration: none; border-radius: 4px; margin-right: 8px; font-size: 14px; }
         .actions a.secondary { background: #6c757d; }
     </style>
 </head>
 <body>
-    <h1>Care Plan #{{ order_id }}</h1>
+    <h1>
+        Care Plan #{{ care_plan.id }}
+        <span class="status status-{{ care_plan.status }}">{{ care_plan.get_status_display }}</span>
+    </h1>
 
     <div class="meta">
-        <p><strong>Patient:</strong> {{ order.data.patient_first_name }} {{ order.data.patient_last_name }} (MRN: {{ order.data.patient_mrn }}, DOB: {{ order.data.patient_dob }})</p>
-        <p><strong>Medication:</strong> {{ order.data.medication_name }}</p>
-        <p><strong>Diagnosis:</strong> {{ order.data.primary_diagnosis }}</p>
-        <p><strong>Provider:</strong> {{ order.data.provider_name }} (NPI: {{ order.data.provider_npi }})</p>
+        <p><strong>Patient:</strong> {{ care_plan.order.patient.name }} (MRN: {{ care_plan.order.patient.mrn }}, DOB: {{ care_plan.order.patient.dob }})</p>
+        <p><strong>Medication:</strong> {{ care_plan.order.medication }}</p>
+        <p><strong>Diagnosis:</strong> {{ care_plan.order.diagnosis }}</p>
+        <p><strong>Provider:</strong> {{ care_plan.order.provider.name }} (NPI: {{ care_plan.order.provider.npi }})</p>
     </div>
 
     <div class="actions">
-        <a href="/orders/{{ order_id }}/download/">Download as TXT</a>
+        <a href="/care-plans/{{ care_plan.id }}/download/">Download as TXT</a>
         <a href="/" class="secondary">Generate Another</a>
     </div>
 
-    <div class="care-plan">{{ order.care_plan }}</div>
+    {% if care_plan.status == 'completed' %}
+        <div class="care-plan">{{ care_plan.content }}</div>
+    {% else %}
+        <div class="pending-notice">
+            ⏳ <strong>Care plan is being generated.</strong><br>
+            Status: <code>{{ care_plan.status }}</code><br>
+            Refresh the page in a moment to see the result.
+            <br><br>
+            <em>(Day 4 注：现在 worker 还没写，所以会一直停在 pending。Day 5 接上 worker 后就会看到 completed。)</em>
+        </div>
+    {% endif %}
 </body>
 </html>
