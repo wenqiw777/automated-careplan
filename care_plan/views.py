@@ -1,18 +1,12 @@
-import json
 import logging
 
-import redis
-from django.conf import settings
 from django.shortcuts import render, redirect, get_object_or_404
 from django.http import HttpResponse, JsonResponse
 
 from .models import Patient, Provider, Order, CarePlan
+from .tasks import generate_care_plan
 
 logger = logging.getLogger(__name__)
-
-
-def _redis_client():
-    return redis.Redis.from_url(settings.REDIS_URL)
 
 
 def form_view(request):
@@ -63,14 +57,8 @@ def submit_view(request):
 
     logger.info("已写入 DB：CarePlan #%d (status=pending)", care_plan.id)
 
-    client = _redis_client()
-    message = json.dumps({"care_plan_id": care_plan.id})
-    queue_length = client.lpush(settings.CAREPLAN_QUEUE_NAME, message)
-
-    logger.info(
-        "已推入 Redis 队列 [%s]：care_plan_id=%d，队列当前长度 %d",
-        settings.CAREPLAN_QUEUE_NAME, care_plan.id, queue_length,
-    )
+    generate_care_plan.delay(care_plan.id)
+    logger.info("已派发 Celery 任务：care_plan_id=%d", care_plan.id)
 
     return redirect('care_plan_detail', care_plan_id=care_plan.id)
 
