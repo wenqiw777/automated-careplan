@@ -14,6 +14,7 @@
         .meta p { margin: 4px 0; }
         .care-plan { background: #f8f9fa; padding: 24px; border-radius: 8px; white-space: pre-wrap; line-height: 1.6; font-size: 15px; margin-top: 16px; border: 1px solid #e0e0e0; }
         .pending-notice { background: #fff4cd; padding: 24px; border-radius: 8px; margin-top: 16px; border: 1px solid #ffeaa7; color: #856404; }
+        .failed-notice { background: #f8d7da; padding: 24px; border-radius: 8px; margin-top: 16px; border: 1px solid #f5c6cb; color: #721c24; }
         .actions { margin: 20px 0; }
         .actions a { padding: 10px 20px; background: #0066cc; color: white; text-decoration: none; border-radius: 4px; margin-right: 8px; font-size: 14px; }
         .actions a.secondary { background: #6c757d; }
@@ -22,7 +23,8 @@
 <body>
     <h1>
         Care Plan #{{ care_plan.id }}
-        <span class="status status-{{ care_plan.status }}">{{ care_plan.get_status_display }}</span>
+        <!-- JS 轮询时会直接操作这个元素的 class 和文字 -->
+        <span id="status-badge" class="status status-{{ care_plan.status }}">{{ care_plan.get_status_display }}</span>
     </h1>
 
     <div class="meta">
@@ -37,16 +39,76 @@
         <a href="/" class="secondary">Generate Another</a>
     </div>
 
-    {% if care_plan.status == 'completed' %}
-        <div class="care-plan">{{ care_plan.content }}</div>
-    {% else %}
-        <div class="pending-notice">
-            ⏳ <strong>Care plan is being generated.</strong><br>
-            Status: <code>{{ care_plan.status }}</code><br>
-            Refresh the page in a moment to see the result.
-            <br><br>
-            <em>(Day 4 注：现在 worker 还没写，所以会一直停在 pending。Day 5 接上 worker 后就会看到 completed。)</em>
-        </div>
-    {% endif %}
+    <!-- 这个 div 是轮询的"结果区"，JS 会替换它的内容 -->
+    <div id="result-area">
+        {% if care_plan.status == 'completed' %}
+            <div class="care-plan">{{ care_plan.content }}</div>
+        {% elif care_plan.status == 'failed' %}
+            <div class="failed-notice">
+                ❌ <strong>Generation failed.</strong> Please try submitting again.
+            </div>
+        {% else %}
+            <div class="pending-notice">
+                ⏳ <strong>Care plan is being generated...</strong><br>
+                Status: <span id="status-text">{{ care_plan.status }}</span><br>
+                Checking for updates automatically.
+            </div>
+        {% endif %}
+    </div>
+
+    <script>
+        const carePlanId = {{ care_plan.id }};
+        const initialStatus = "{{ care_plan.status }}";
+
+        function updateStatusBadge(status) {
+            const badge = document.getElementById('status-badge');
+            badge.className = `status status-${status}`;
+            badge.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+        }
+
+        function renderCompleted(content) {
+            document.getElementById('result-area').innerHTML =
+                `<div class="care-plan">${content}</div>`;
+        }
+
+        function renderFailed() {
+            document.getElementById('result-area').innerHTML =
+                `<div class="failed-notice">❌ <strong>Generation failed.</strong> Please try submitting again.</div>`;
+        }
+
+        function renderTimeout() {
+            document.getElementById('result-area').innerHTML =
+                `<div class="failed-notice">⏱ Generation timed out. Please refresh the page.</div>`;
+        }
+
+        // 只有非终止状态才需要建立 SSE 连接
+        if (!['completed', 'failed'].includes(initialStatus)) {
+            // EventSource 是浏览器原生 API，专门处理 SSE
+            // 和 WebSocket 不同：单向（只能服务器推给浏览器），但用普通 HTTP，不需要升级协议
+            const evtSource = new EventSource(`/sse/careplan/${carePlanId}/`);
+
+            evtSource.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                updateStatusBadge(data.status);
+
+                if (data.status === 'completed') {
+                    evtSource.close();  // 主动关闭，阻止 EventSource 自动重连
+                    renderCompleted(data.content);
+                } else if (data.status === 'failed') {
+                    evtSource.close();
+                    renderFailed();
+                } else if (data.status === 'timeout') {
+                    evtSource.close();
+                    renderTimeout();
+                }
+            };
+
+            evtSource.onerror = function() {
+                // EventSource 默认会在断开后自动重连，这里选择放弃
+                evtSource.close();
+                console.error('SSE connection error');
+            };
+        }
+    </script>
 </body>
 </html>

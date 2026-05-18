@@ -7,4 +7,6 @@ urlpatterns = [
     path('care-plans/<int:care_plan_id>/', views.care_plan_detail, name='care_plan_detail'),
     path('care-plans/<int:care_plan_id>/download/', views.download_care_plan, name='download'),
     path('care-plans/', views.get_care_plans_by_mrn, name='get_care_plans_by_mrn'),
+    path('api/careplan/<int:care_plan_id>/status/', views.care_plan_status, name='care_plan_status'),
+    path('sse/careplan/<int:care_plan_id>/', views.care_plan_sse, name='care_plan_sse'),
 ]

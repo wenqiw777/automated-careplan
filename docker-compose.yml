@@ -50,6 +50,7 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - DATABASE_URL=postgresql://careplan:careplan@db:5432/careplan
       - REDIS_URL=redis://redis:6379/0
+      - USE_MOCK_LLM=${USE_MOCK_LLM:-false}
     depends_on:
       db:
         condition: service_healthy

@@ -1,9 +1,13 @@
+import json
 import logging
+import time
 
-from django.shortcuts import render, redirect, get_object_or_404
-from django.http import HttpResponse, JsonResponse
+import redis as redis_lib
+from django.conf import settings
+from django.http import HttpResponse, JsonResponse, StreamingHttpResponse
+from django.shortcuts import get_object_or_404, redirect, render
 
-from .models import Patient, Provider, Order, CarePlan
+from .models import CarePlan, Order, Patient, Provider
 from .tasks import generate_care_plan
 
 logger = logging.getLogger(__name__)
@@ -77,6 +81,66 @@ def download_care_plan(request, care_plan_id):
     response = HttpResponse(content, content_type='text/plain')
     response['Content-Disposition'] = f'attachment; filename="care_plan_{care_plan_id}.txt"'
     return response
+
+
+def care_plan_sse(request, care_plan_id):
+    """
+    长连接：浏览器连上来后，这个 view 会一直挂着，直到 Celery 发来结果。
+    用 StreamingHttpResponse + generator 实现——generator yield 一行，浏览器就收到一行。
+    """
+    def event_stream():
+        r = redis_lib.Redis.from_url(settings.REDIS_URL)
+        pubsub = r.pubsub()
+
+        # 必须先 subscribe，再查 DB，防止竞态：
+        # 如果先查 DB(pending) 再 subscribe，worker 可能刚好在这中间 publish，消息就丢了
+        pubsub.subscribe(f"careplan:{care_plan_id}")
+
+        try:
+            # 如果连上来时任务已经跑完，直接返回，不用等
+            care_plan = CarePlan.objects.get(pk=care_plan_id)
+            if care_plan.status in (CarePlan.Status.COMPLETED, CarePlan.Status.FAILED):
+                payload = {"status": care_plan.status}
+                if care_plan.status == CarePlan.Status.COMPLETED:
+                    payload["content"] = care_plan.content
+                yield f"data: {json.dumps(payload)}\n\n"
+                return
+
+            # 等待 Redis Pub/Sub 消息，最多等 5 分钟
+            deadline = time.time() + 300
+            while time.time() < deadline:
+                # get_message(timeout=15)：最多阻塞 15 秒，没消息返回 None
+                message = pubsub.get_message(timeout=15)
+                if message and message["type"] == "message":
+                    # message["data"] 是 bytes，decode 成字符串
+                    yield f"data: {message['data'].decode()}\n\n"
+                    return
+                # 每 15 秒发一个 SSE 注释行，防止代理/浏览器因超时断开连接
+                yield ": heartbeat\n\n"
+
+            # 超时：通知前端，让它自行处理（比如提示用户刷新）
+            yield f"data: {json.dumps({'status': 'timeout'})}\n\n"
+
+        finally:
+            # 无论正常退出还是异常，都要清理 Redis 连接
+            pubsub.unsubscribe()
+            pubsub.close()
+            r.close()
+
+    response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
+    response["Cache-Control"] = "no-cache"
+    response["X-Accel-Buffering"] = "no"  # 告诉 Nginx 不要缓冲，立即透传给浏览器
+    return response
+
+
+def care_plan_status(request, care_plan_id):
+    """轮询用：只返回 status 和（完成时的）content，不渲染整页 HTML。"""
+    care_plan = get_object_or_404(CarePlan, pk=care_plan_id)
+    data = {'status': care_plan.status}
+    # content 只在 completed 时有意义，避免把空字符串传给前端
+    if care_plan.status == CarePlan.Status.COMPLETED:
+        data['content'] = care_plan.content
+    return JsonResponse(data)
 
 
 def get_care_plans_by_mrn(request):
