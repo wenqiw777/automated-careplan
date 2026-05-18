@@ -99,20 +99,26 @@ side effects, patient education points, and follow-up schedule.
     acks_late=True,   # 任务完成后才从队列删除，crash 了会重新入队
 )
 def generate_care_plan(self, care_plan_id: int) -> None:
+    print(f"\n[4] CELERY TASK 开始 - care_plan_id: {care_plan_id}")
     care_plan = CarePlan.objects.select_related(
         "order__patient", "order__provider"
     ).get(pk=care_plan_id)
+    print(f"[4] 从 DB 读取 - patient: {care_plan.order.patient.name}, medication: {care_plan.order.medication}")
 
     care_plan.status = CarePlan.Status.PROCESSING
     care_plan.save(update_fields=["status", "updated_at"])
     logger.info("CarePlan #%d → processing (attempt %d/3)", care_plan_id, self.request.retries + 1)
 
     try:
-        care_plan.content = _call_llm(_build_prompt(care_plan.order))
+        prompt = _build_prompt(care_plan.order)
+        print(f"[5] 调用 LLM - USE_MOCK_LLM={os.environ.get('USE_MOCK_LLM', 'false')}, prompt 长度: {len(prompt)} 字符")
+        care_plan.content = _call_llm(prompt)
+        print(f"[6] LLM 返回 - content 长度: {len(care_plan.content)} 字符")
         care_plan.status = CarePlan.Status.COMPLETED
         care_plan.save(update_fields=["content", "status", "updated_at"])
         logger.info("CarePlan #%d → completed", care_plan_id)
 
+        print(f"[7] 发布 Redis Pub/Sub - channel: careplan:{care_plan_id}, status: completed")
         # DB 已更新后，通知所有等待这个 care plan 的 SSE 连接
         _publish(care_plan_id, {"status": "completed", "content": care_plan.content})
 
