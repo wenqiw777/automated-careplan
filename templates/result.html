@@ -85,7 +85,7 @@
         if (!['completed', 'failed'].includes(initialStatus)) {
             // EventSource 是浏览器原生 API，专门处理 SSE
             // 和 WebSocket 不同：单向（只能服务器推给浏览器），但用普通 HTTP，不需要升级协议
-            const evtSource = new EventSource(`/sse/careplan/${carePlanId}/`);
+            const evtSource = new EventSource(`/care-plans/${carePlanId}/stream/`);
 
             evtSource.onmessage = function(event) {
                 const data = JSON.parse(event.data);
