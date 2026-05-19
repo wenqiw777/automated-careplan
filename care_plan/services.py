@@ -1,30 +1,88 @@
 import json
 import logging
 import time
+from datetime import date
 
 import redis as redis_lib
 from django.conf import settings
 
+from .exceptions import BlockError, WarningException
 from .models import CarePlan, Order, Patient, Provider
 from .tasks import generate_care_plan
 
 logger = logging.getLogger(__name__)
 
 
-def create_care_plan(patient_data, provider_data, order_data):
-    print("\n[2b] SERVICE 入口 - patient_data:", patient_data)
-    patient, _ = Patient.objects.get_or_create(
-        mrn=patient_data['mrn'],
-        defaults={
-            'name': patient_data['name'],
-            'dob': patient_data['dob'],
-        },
-    )
+def _resolve_provider(provider_data):
+    try:
+        existing = Provider.objects.get(npi=provider_data['npi'])
+    except Provider.DoesNotExist:
+        return Provider.objects.create(npi=provider_data['npi'], name=provider_data['name'])
 
-    provider, _ = Provider.objects.get_or_create(
-        npi=provider_data['npi'],
-        defaults={'name': provider_data['name']},
-    )
+    if existing.name != provider_data['name']:
+        raise BlockError(
+            code='PROVIDER_NPI_CONFLICT',
+            message=f"NPI {existing.npi} 已注册为 '{existing.name}'，与请求的 '{provider_data['name']}' 不符",
+        )
+    return existing
+
+
+def _resolve_patient(patient_data):
+    mrn = patient_data['mrn']
+    name = patient_data['name']
+    dob = patient_data['dob']
+
+    try:
+        existing = Patient.objects.get(mrn=mrn)
+    except Patient.DoesNotExist:
+        existing = None
+
+    if existing is not None:
+        if Patient.objects.filter(mrn=mrn, name=name, dob=dob).exists():
+            return existing
+        raise WarningException(
+            code='PATIENT_MRN_MISMATCH',
+            message=f"MRN {mrn} 已存在，但姓名或生日不匹配",
+            detail={'existing': {'name': existing.name, 'dob': str(existing.dob)},
+                    'requested': {'name': name, 'dob': str(dob)}},
+        )
+
+    try:
+        conflicting = Patient.objects.get(name=name, dob=dob)
+        raise WarningException(
+            code='PATIENT_IDENTITY_CONFLICT',
+            message=f"患者 {name} / {dob} 已存在，但 MRN 不同",
+            detail={'existing_mrn': conflicting.mrn, 'requested_mrn': mrn},
+        )
+    except Patient.DoesNotExist:
+        pass
+
+    return Patient.objects.create(mrn=mrn, name=name, dob=dob)
+
+
+def _check_duplicate_order(patient, medication, confirm):
+    today = date.today()
+
+    if Order.objects.filter(patient=patient, medication=medication, created_at__date=today).exists():
+        raise BlockError(
+            code='ORDER_SAME_DAY_DUPLICATE',
+            message=f"患者 {patient.name} 今天已有 '{medication}' 的 order，不能重复提交",
+        )
+
+    if not confirm and Order.objects.filter(patient=patient, medication=medication).exists():
+        raise WarningException(
+            code='ORDER_HISTORY_DUPLICATE',
+            message=f"患者 {patient.name} 历史上已有 '{medication}' 的 order",
+            detail={'hint': '如需继续请在请求中加 confirm=true'},
+        )
+
+
+def create_care_plan(patient_data, provider_data, order_data, confirm=False):
+    print("\n[2b] SERVICE 入口 - patient_data:", patient_data)
+
+    provider = _resolve_provider(provider_data)
+    patient = _resolve_patient(patient_data)
+    _check_duplicate_order(patient, order_data['medication'], confirm)
 
     order = Order.objects.create(
         patient=patient,

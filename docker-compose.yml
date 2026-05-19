@@ -59,6 +59,16 @@ services:
       redis:
         condition: service_healthy
 
+  test:
+    build: .
+    command: pytest --cov=care_plan --cov-report=term-missing -v
+    volumes:
+      - .:/app
+    environment:
+      - DJANGO_SETTINGS_MODULE=care_plan.settings_test
+    profiles:
+      - test
+
 volumes:
   postgres_data:
   redis_data:

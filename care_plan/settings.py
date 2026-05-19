@@ -29,6 +29,7 @@ DATABASES = {
 
 MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
+    'care_plan.middleware.AppExceptionMiddleware',
 ]
 
 ROOT_URLCONF = 'care_plan.urls'

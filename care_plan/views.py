@@ -3,6 +3,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 
 from .models import CarePlan
 from .serializers import parse_submit_post, serialize_care_plan_list, serialize_care_plan_status
+from .exceptions import ValidationError
 from .services import create_care_plan, get_care_plan_event_stream, list_care_plans_by_mrn
 
 
@@ -12,11 +13,14 @@ def form_view(request):
 
 def submit_view(request):
     print("\n[1] VIEW 入口 - request.POST (QueryDict):", dict(request.POST))
-    patient_data, provider_data, order_data = parse_submit_post(request.POST)
+    patient_data, provider_data, order_data, confirm = parse_submit_post(request.POST)
     print("[2] SERIALIZER 返回 - patient_data:", patient_data)
     print("[2] SERIALIZER 返回 - provider_data:", provider_data)
     print("[2] SERIALIZER 返回 - order_data:", order_data)
-    care_plan = create_care_plan(patient_data, provider_data, order_data)
+    print("[2] SERIALIZER 返回 - confirm:", confirm)
+
+    care_plan = create_care_plan(patient_data, provider_data, order_data, confirm=confirm)
+
     print("[3] SERVICE 返回 - care_plan.id:", care_plan.id, "status:", care_plan.status)
     return redirect('care_plan_detail', care_plan_id=care_plan.id)
 
@@ -55,6 +59,6 @@ def care_plan_status(request, care_plan_id):
 def get_care_plans_by_mrn(request):
     mrn = request.GET.get('mrn', '')
     if mrn == '':
-        return JsonResponse({'error': 'MRN is required'}, status=400)
+        raise ValidationError(code='MRN_REQUIRED', message='MRN is required')
     care_plans = list_care_plans_by_mrn(mrn)
     return JsonResponse({'care_plans': serialize_care_plan_list(care_plans)})

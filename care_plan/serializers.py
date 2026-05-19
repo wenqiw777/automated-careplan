@@ -32,7 +32,8 @@ def parse_submit_post(post_data):
         'diagnosis': diagnosis,
         'medical_record': "\n\n".join(medical_record_parts),
     }
-    return patient_data, provider_data, order_data
+    confirm = post_data.get('confirm', '').lower() == 'true'
+    return patient_data, provider_data, order_data, confirm
 
 
 def serialize_care_plan_status(care_plan):
